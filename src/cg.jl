@@ -5,6 +5,7 @@ export cg, cg!, CGIterable, PCGIterable, cg_iterator!, CGStateVariables
 mutable struct CGIterable{matT, solT, vecT, numT <: Real}
     A::matT
     x::solT
+    b::vecT
     r::vecT
     c::vecT
     u::vecT
@@ -13,12 +14,14 @@ mutable struct CGIterable{matT, solT, vecT, numT <: Real}
     prev_residual::numT
     maxiter::Int
     mv_products::Int
+    converged
 end
 
 mutable struct PCGIterable{precT, matT, solT, vecT, numT <: Real, paramT <: Number}
     Pl::precT
     A::matT
     x::solT
+    b::vecT
     r::vecT
     c::vecT
     u::vecT
@@ -27,13 +30,12 @@ mutable struct PCGIterable{precT, matT, solT, vecT, numT <: Real, paramT <: Numb
     ρ::paramT
     maxiter::Int
     mv_products::Int
+    converged
 end
 
-@inline converged(it::Union{CGIterable, PCGIterable}) = it.residual ≤ it.reltol
+@inline default_converged(it::Union{CGIterable, PCGIterable}, iteration::Int) = iteration ≥ it.maxiter || it.residual ≤ it.reltol
 
 @inline start(it::Union{CGIterable, PCGIterable}) = 0
-
-@inline done(it::Union{CGIterable, PCGIterable}, iteration::Int) = iteration ≥ it.maxiter || converged(it)
 
 
 ###############
@@ -41,7 +43,7 @@ end
 ###############
 
 function iterate(it::CGIterable, iteration::Int=start(it))
-    if done(it, iteration) return nothing end
+    if it.converged(it, iteration) return nothing end
 
     # u := r + βu (almost an axpy)
     β = it.residual^2 / it.prev_residual^2
@@ -68,7 +70,7 @@ end
 
 function iterate(it::PCGIterable, iteration::Int=start(it))
     # Check for termination first
-    if done(it, iteration)
+    if it.converged(it, iteration)
         return nothing
     end
 
@@ -117,7 +119,8 @@ function cg_iterator!(x, A, b, Pl = Identity();
     tol = sqrt(eps(real(eltype(b)))),
     maxiter::Int = size(A, 2),
     statevars::CGStateVariables = CGStateVariables(zero(x), similar(x), similar(x)),
-    initially_zero::Bool = false
+    initially_zero::Bool = false,
+    converged = default_converged
 )
     u = statevars.u
     r = statevars.r
@@ -141,14 +144,14 @@ function cg_iterator!(x, A, b, Pl = Identity();
 
     # Return the iterable
     if isa(Pl, Identity)
-        return CGIterable(A, x, r, c, u,
+        return CGIterable(A, x, b, r, c, u,
             reltol, residual, one(residual),
-            maxiter, mv_products
+            maxiter, mv_products, converged
         )
     else
-        return PCGIterable(Pl, A, x, r, c, u,
+        return PCGIterable(Pl, A, x, b, r, c, u,
             reltol, residual, one(eltype(x)),
-            maxiter, mv_products
+            maxiter, mv_products, converged
         )
     end
 end
@@ -205,6 +208,7 @@ function cg!(x, A, b;
     statevars::CGStateVariables = CGStateVariables(zero(x), similar(x), similar(x)),
     verbose::Bool = false,
     Pl = Identity(),
+    converged = default_converged,
     kwargs...
 )
     history = ConvergenceHistory(partial = !log)
@@ -212,7 +216,7 @@ function cg!(x, A, b;
     log && reserve!(history, :resnorm, maxiter + 1)
 
     # Actually perform CG
-    iterable = cg_iterator!(x, A, b, Pl; tol = tol, maxiter = maxiter, statevars = statevars, kwargs...)
+    iterable = cg_iterator!(x, A, b, Pl; tol = tol, maxiter = maxiter, statevars = statevars, converged = converged, kwargs...)
     if log
         history.mvps = iterable.mv_products
     end
@@ -225,7 +229,7 @@ function cg!(x, A, b;
     end
 
     verbose && println()
-    log && setconv(history, converged(iterable))
+    log && setconv(history, converged(iterable, 1))
     log && shrink!(history)
 
     log ? (iterable.x, history) : iterable.x
