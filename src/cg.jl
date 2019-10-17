@@ -229,7 +229,7 @@ function cg!(x, A, b;
     end
 
     verbose && println()
-    log && setconv(history, converged(iterable, 1))
+    log && setconv(history, niters(history) < maxiter)
     log && shrink!(history)
 
     log ? (iterable.x, history) : iterable.x
