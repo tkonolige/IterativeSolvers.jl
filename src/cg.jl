@@ -10,6 +10,7 @@ mutable struct CGIterable{matT, solT, vecT, numT <: Real}
     c::vecT
     u::vecT
     reltol::numT
+    gtol::numT
     residual::numT
     prev_residual::numT
     maxiter::Int
@@ -26,6 +27,7 @@ mutable struct PCGIterable{precT, matT, solT, vecT, numT <: Real, paramT <: Numb
     c::vecT
     u::vecT
     reltol::numT
+    gtol::numT
     residual::numT
     ρ::paramT
     maxiter::Int
@@ -117,6 +119,7 @@ end
 
 function cg_iterator!(x, A, b, Pl = Identity();
     tol = sqrt(eps(real(eltype(b)))),
+    gtol = eps(real(eltype(b))),
     maxiter::Int = size(A, 2),
     statevars::CGStateVariables = CGStateVariables(zero(x), similar(x), similar(x)),
     initially_zero::Bool = false,
@@ -145,12 +148,12 @@ function cg_iterator!(x, A, b, Pl = Identity();
     # Return the iterable
     if isa(Pl, Identity)
         return CGIterable(A, x, b, r, c, u,
-            reltol, residual, one(residual),
+            reltol, gtol, residual, one(residual),
             maxiter, mv_products, converged
         )
     else
         return PCGIterable(Pl, A, x, b, r, c, u,
-            reltol, residual, one(eltype(x)),
+            reltol, gtol, residual, one(eltype(x)),
             maxiter, mv_products, converged
         )
     end
@@ -203,6 +206,7 @@ cg(A, b; kwargs...) = cg!(zerox(A, b), A, b; initially_zero = true, kwargs...)
 """
 function cg!(x, A, b;
     tol = sqrt(eps(real(eltype(b)))),
+    gtol = eps(real(eltype(b))),
     maxiter::Int = size(A, 2),
     log::Bool = false,
     statevars::CGStateVariables = CGStateVariables(zero(x), similar(x), similar(x)),
@@ -216,7 +220,7 @@ function cg!(x, A, b;
     log && reserve!(history, :resnorm, maxiter + 1)
 
     # Actually perform CG
-    iterable = cg_iterator!(x, A, b, Pl; tol = tol, maxiter = maxiter, statevars = statevars, converged = converged, kwargs...)
+    iterable = cg_iterator!(x, A, b, Pl; tol = tol, gtol = gtol, maxiter = maxiter, statevars = statevars, converged = converged, kwargs...)
     if log
         history.mvps = iterable.mv_products
     end
