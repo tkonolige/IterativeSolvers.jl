@@ -35,9 +35,27 @@ mutable struct PCGIterable{precT, matT, solT, vecT, numT <: Real, paramT <: Numb
     converged
 end
 
-@inline default_converged(it::Union{CGIterable, PCGIterable}, iteration::Int) = iteration ≥ it.maxiter || it.residual ≤ it.reltol
+mutable struct FCGIterable{precT, matT, solT, vecT, numT <: Real, paramT <: Number}
+    Pl::precT
+    A::matT
+    x::solT
+    b::vecT
+    r::vecT
+    r_prev::vecT
+    c::vecT
+    u::vecT
+    reltol::numT
+    gtol::numT
+    residual::numT
+    ρ::paramT
+    maxiter::Int
+    mv_products::Int
+    converged
+end
 
-@inline start(it::Union{CGIterable, PCGIterable}) = 0
+@inline default_converged(it::Union{CGIterable, PCGIterable, FCGIterable}, iteration::Int) = iteration ≥ it.maxiter || it.residual ≤ it.reltol
+
+@inline start(it::Union{CGIterable, PCGIterable, FCGIterable}) = 0
 
 
 ###############
@@ -99,6 +117,36 @@ function iterate(it::PCGIterable, iteration::Int=start(it))
     it.residual, iteration + 1
 end
 
+function iterate(it::FCGIterable, iteration::Int=start(it))
+    # Check for termination first
+    if it.converged(it, iteration)
+        return nothing
+    end
+
+    ldiv!(it.c, it.Pl, it.r)
+
+    ρ_prev = it.ρ
+    it.ρ = dot(it.c, it.r - it.r_prev)
+
+    # u := c + βu (almost an axpy)
+    β = it.ρ / ρ_prev
+    it.u .= it.c .+ β .* it.u
+
+    # c = A * u
+    mul!(it.c, it.A, it.u)
+    α = it.ρ / dot(it.u, it.c)
+
+    # Improve solution and residual
+    it.r_prev = r
+    it.x .+= α .* it.u
+    it.r .-= α .* it.c
+
+    it.residual = norm(it.r)
+
+    # Return the residual at item and iteration number as state
+    it.residual, iteration + 1
+end
+
 # Utility functions
 
 """
@@ -123,7 +171,8 @@ function cg_iterator!(x, A, b, Pl = Identity();
     maxiter::Int = size(A, 2),
     statevars::CGStateVariables = CGStateVariables(zero(x), similar(x), similar(x)),
     initially_zero::Bool = false,
-    converged = default_converged
+    converged = default_converged,
+    flexible::Bool = false
 )
     u = statevars.u
     r = statevars.r
@@ -149,6 +198,11 @@ function cg_iterator!(x, A, b, Pl = Identity();
     if isa(Pl, Identity)
         return CGIterable(A, x, b, r, c, u,
             reltol, gtol, residual, one(residual),
+            maxiter, mv_products, converged
+        )
+    elseif flexible
+        return FCGIterable(Pl, A, x, b, r, zeros(size(r)), c, u,
+            reltol, gtol, residual, one(eltype(x)),
             maxiter, mv_products, converged
         )
     else
@@ -187,6 +241,7 @@ cg(A, b; kwargs...) = cg!(zerox(A, b), A, b; initially_zero = true, kwargs...)
 - `maxiter::Int = size(A,2)`: maximum number of iterations;
 - `verbose::Bool = false`: print method information;
 - `log::Bool = false`: keep track of the residual norm in each iteration.
+- `flexbile::Bool = false`: use flexible iterations for when the preconditioner is not symmetric
 
 # Output
 
@@ -213,6 +268,7 @@ function cg!(x, A, b;
     verbose::Bool = false,
     Pl = Identity(),
     converged = default_converged,
+    flexible::Bool = false,
     kwargs...
 )
     history = ConvergenceHistory(partial = !log)
@@ -220,7 +276,7 @@ function cg!(x, A, b;
     log && reserve!(history, :resnorm, maxiter + 1)
 
     # Actually perform CG
-    iterable = cg_iterator!(x, A, b, Pl; tol = tol, gtol = gtol, maxiter = maxiter, statevars = statevars, converged = converged, kwargs...)
+    iterable = cg_iterator!(x, A, b, Pl; tol = tol, gtol = gtol, maxiter = maxiter, statevars = statevars, converged = converged, flexible = flexible, kwargs...)
     if log
         history.mvps = iterable.mv_products
     end
